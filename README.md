@@ -1,47 +1,72 @@
-# AI Lead Qualification & CRM Automation
+# AI-Powered Lead Qualification & CRM Automation
 
-An n8n workflow that takes an inbound lead, scores it against an explicit
-qualification rubric using Claude, writes the result to HubSpot with a full audit
-trail, and — for high-priority leads only — drafts a personalized outreach email in
-Gmail for a human to review and send.
+## The problem
 
-## The flow
+Inbound leads — from a web form, a chat widget, wherever — usually land in an inbox
+or a CRM and sit there until someone has time to read them, decide whether they're
+worth pursuing, and manually enter notes. That delay costs the best leads (the ones
+ready to buy *now* lose momentum while they wait), and it costs the team time (every
+lead gets the same manual triage, whether it's a great fit or a waste of an hour).
+Qualification criteria also tend to live in one person's head, so two reps judge the
+same lead differently, and there's rarely a written record of *why* a lead was
+prioritized or dropped.
 
+## What this solves
+
+This workflow qualifies every inbound lead automatically, the moment it arrives:
+
+- **Consistent scoring** — the same criteria applied to every lead, every time, not
+  whoever happens to read it first.
+- **A reasoned decision, not a black box** — the CRM record shows *why* a lead was
+  scored the way it was, so a human can quickly sanity-check or override it.
+- **Only real opportunities interrupt a human** — high-priority leads get a
+  ready-to-send outreach email drafted immediately; everything else is logged for
+  later without demanding anyone's attention.
+- **Nothing sends itself** — outreach is always a draft. A person reviews and sends.
+
+The result: hot leads get a response while they're still hot, low-value leads stop
+eating manual review time, and every decision is auditable after the fact.
+
+## How it works
+
+```mermaid
+flowchart TD
+    A[Lead submitted<br/>web form / chat / API] --> B{Required fields<br/>present?}
+    B -- No --> C[Reject with a clear error]
+    B -- Yes --> D[AI scores the lead:<br/>budget, urgency, fit → 0-100 + reasoning]
+    D --> E[Upsert CRM contact<br/>+ write audit-trail note]
+    E --> F{High priority?<br/>score ≥ 70}
+    F -- No --> G[Logged for nurture /<br/>later follow-up]
+    F -- Yes --> H[AI drafts a personalized<br/>outreach email]
+    H --> I[Saved as a draft<br/>for a human to review & send]
+    G --> J[Response sent back<br/>to the caller]
+    I --> J
 ```
-Web form → Webhook (shared-secret auth required)
-  → Validate required fields                     ── missing/invalid → 400
-  → Claude: score the lead against the rubric
-      (budget signal, urgency signal, fit signal → 0-100 + reasoning)
-  → HubSpot: upsert contact + write an audit-trail note
-      (score, signals, reasoning, and the lead's original message)
-  → Is it high priority (score >= 70)?
-      ├─ No  → done, contact logged in HubSpot for nurture/follow-up later
-      └─ Yes → Claude drafts a personalized outreach email
-                → Gmail: save as a draft (never auto-sent)
-  → Respond to the caller with the outcome
-```
 
-Every external call (Claude ×2, HubSpot ×2, Gmail) retries transient failures up to
-3 times before giving up, and every failure path returns a clean, sanitized error
-response instead of a stack trace or a hung request.
+Every external call retries automatically on a transient failure, and any real
+failure returns a clean error instead of leaving the caller hanging.
 
-## Why score with reasoning, not a binary flag
+## The scoring model
 
-The lead is scored on three dimensions:
+Each lead is scored on three dimensions, weighted so that fit matters most — a big
+budget for the wrong kind of work is still a poor-fit lead:
 
-- **Budget signal** — explicit number/range mentioned, implied by scope, or none.
+- **Budget signal** — explicit number/range, implied by scope, or none.
 - **Urgency signal** — immediate, near-term, or purely exploratory.
-- **Fit signal** — how well the request matches the target service (n8n / AI agent /
-  CRM automation work), weighted most heavily: a great budget for the wrong kind of
-  work is still a poor lead.
+- **Fit signal** — how well the request matches the services on offer.
 
-Claude is called with forced tool-calling so the output is always structured — a
-score plus a `reasoning` string, never free text to parse. That reasoning is what
-lands in HubSpot as the audit note, so anyone reviewing the contact record sees
-*why* it was scored the way it was, not just a number. Score thresholds
-(`>=70` high-priority, `40-69` nurture, `<40` log-only) are computed in code, not
-left to the model, so the outcome is deterministic and reproducible for a given
-score.
+The AI returns a score *and* its reasoning as structured data (forced tool-calling,
+not free text to parse), and that reasoning is what gets written into the CRM as the
+audit note. The score thresholds that decide the outcome (high-priority / nurture /
+log-only) are fixed, ordinary logic — not left up to the model — so the same score
+always produces the same decision.
+
+**On the AI provider:** this build uses Claude for scoring and drafting, via forced
+tool/function-calling so the output is always structured JSON rather than prose to
+parse. That's a pattern most major LLM providers support (OpenAI, Gemini, etc.), so
+this isn't locked to one vendor — swapping providers means updating the two API
+call/response steps to match the new provider's request and response shape, not
+redesigning the workflow.
 
 ## Setup
 
@@ -102,5 +127,5 @@ curl -X POST https://your-n8n-instance/webhook/qualify-lead \
 
 ## Stack
 
-n8n · Claude API (forced tool-calling for structured output) · HubSpot CRM
-(contacts + notes v3 API) · Gmail API (drafts only).
+n8n · an LLM with tool/function-calling for structured output (built with Claude) ·
+HubSpot CRM (contacts + notes v3 API) · Gmail API (drafts only).
