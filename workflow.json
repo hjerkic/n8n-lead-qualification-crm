@@ -1,0 +1,625 @@
+{
+  "name": "Qualify Inbound Lead & Trigger Follow-up",
+  "nodes": [
+    {
+      "id": "4a5131d9-d348-4bda-804b-6649a9805d6e",
+      "name": "Webhook - Lead Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "qualify-lead",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Lead Webhook Shared Secret"
+        }
+      }
+    },
+    {
+      "id": "6616996c-1e17-4f48-9dfc-7fc1f378c9cd",
+      "name": "Validate Lead",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        250,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.body.email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ $json.body.message }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c4519857-9ca1-4a63-8186-c90b3f327352",
+      "name": "Respond - Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        500,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"validation_error\", message: \"email and message are both required\" } }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "7cc99d7b-b462-433c-b156-0a655352ce8d",
+      "name": "Build Scoring Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const lead = $json.body || {};\n\nconst rubricText = `Budget signal (does the lead mention or imply a budget?):\\n- explicit: A specific number or range is stated (e.g. \\\"$5k budget\\\", \\\"$50/hr\\\").\\n- implied: Budget is implied by scope/urgency/company size but no number given.\\n- none: No budget signal at all.\\n\\nUrgency signal (how soon does the lead want this done?):\\n- immediate: Wants to start now or within days; explicit deadline mentioned.\\n- near_term: Wants to start within the next month or so; some time pressure.\\n- exploratory: Just researching, no timeline mentioned.\\n\\nFit signal (how well does the request match target_service_offerings?):\\n- strong: Directly asks for n8n/AI agent/CRM automation work.\\n- adjacent: Related automation/integration/dev work, different tool or platform.\\n- none: Unrelated to automation/dev work entirely.`;\n\nconst targetServiceOfferings = \"n8n workflow automation, AI agent builds (Claude/GPT-powered), and CRM automation (HubSpot, GoHighLevel, Salesforce). Also in-scope: general business process automation where n8n or a similar orchestration tool is the likely implementation.\";\n\nconst scoringInstructions = \"Score 0-100 based on how strong all three signals are together. Explicit budget + immediate urgency + strong fit should score near the top of the range; none/none/none should score near the bottom. Weight fit_signal most heavily - a great budget for the wrong kind of work is still a poor lead for this business.\";\n\nconst prompt = `You are qualifying an inbound lead for a business offering: ${targetServiceOfferings}\\n\\nScore the lead using these dimensions:\\n\\n${rubricText}\\n\\nScoring instructions: ${scoringInstructions}\\n\\nLead:\\nName: ${lead.name || ''}\\nEmail: ${lead.email || ''}\\nCompany: ${lead.company || ''}\\nMessage: ${lead.message || ''}\\n\\nCall submit_qualification_score with your assessment.`;\n\nconst requestBody = {\n  model: \"claude-opus-5\",\n  max_tokens: 4096,\n  output_config: { effort: \"low\" },\n  tools: [\n    {\n      name: \"submit_qualification_score\",\n      description: \"Submit the qualification score and reasoning for an inbound lead.\",\n      strict: true,\n      input_schema: {\n        type: \"object\",\n        properties: {\n          score: { type: \"integer\", description: \"Qualification score from 0 to 100.\" },\n          reasoning: { type: \"string\", description: \"Explanation of the score, referencing all three signals.\" },\n          budget_signal: { type: \"string\", enum: [\"explicit\", \"implied\", \"none\"] },\n          urgency_signal: { type: \"string\", enum: [\"immediate\", \"near_term\", \"exploratory\"] },\n          fit_signal: { type: \"string\", enum: [\"strong\", \"adjacent\", \"none\"] }\n        },\n        required: [\"score\", \"reasoning\", \"budget_signal\", \"urgency_signal\", \"fit_signal\"],\n        additionalProperties: false\n      }\n    }\n  ],\n  tool_choice: { type: \"tool\", name: \"submit_qualification_score\" },\n  messages: [{ role: \"user\", content: prompt }]\n};\n\nreturn [{\n  json: {\n    requestBody,\n    lead: {\n      name: lead.name || '',\n      email: lead.email || '',\n      company: lead.company || '',\n      message: lead.message || ''\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "54d72e48-04ac-4313-8142-f6b0553689df",
+      "name": "Score Lead - Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        750,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Anthropic API Key (Header Auth)"
+        }
+      }
+    },
+    {
+      "id": "6032550a-e5a0-466d-a563-7f567a53c9af",
+      "name": "Parse Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const response = $json;\n\nif (response.stop_reason === 'refusal') {\n  throw new Error('Claude declined to score this lead (refusal): ' + JSON.stringify(response.stop_details || {}));\n}\n\nconst toolUse = (response.content || []).find(b => b.type === 'tool_use');\nif (!toolUse) {\n  throw new Error('No tool_use block found in Claude scoring response');\n}\n\nconst result = toolUse.input;\nconst score = result.score;\n\nlet recommendedAction;\nif (score >= 70) {\n  recommendedAction = 'high_priority_outreach';\n} else if (score >= 40) {\n  recommendedAction = 'nurture';\n} else {\n  recommendedAction = 'log_only';\n}\n\nconst lead = $('Build Scoring Request').first().json.lead;\nconst nameParts = (lead.name || '').trim().split(' ');\nconst firstname = nameParts[0] || '';\nconst lastname = nameParts.slice(1).join(' ') || '';\n\nreturn [{\n  json: {\n    ...lead,\n    firstname,\n    lastname,\n    score,\n    reasoning: result.reasoning,\n    budget_signal: result.budget_signal,\n    urgency_signal: result.urgency_signal,\n    fit_signal: result.fit_signal,\n    recommended_action: recommendedAction\n  }\n}];"
+      }
+    },
+    {
+      "id": "34ede94c-c017-4c94-8b9d-c9f64c7e261b",
+      "name": "HubSpot - Upsert Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        1250,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "authentication": "appToken",
+        "resource": "contact",
+        "operation": "upsert",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "firstname",
+                "value": "={{ $json.firstname }}"
+              },
+              {
+                "property": "lastname",
+                "value": "={{ $json.lastname }}"
+              },
+              {
+                "property": "company",
+                "value": "={{ $json.company }}"
+              },
+              {
+                "property": "lead_qualification_score",
+                "value": "={{ $json.score }}"
+              },
+              {
+                "property": "lead_qualification_reasoning",
+                "value": "={{ $json.reasoning }}"
+              },
+              {
+                "property": "lead_budget_signal",
+                "value": "={{ $json.budget_signal }}"
+              },
+              {
+                "property": "lead_urgency_signal",
+                "value": "={{ $json.urgency_signal }}"
+              },
+              {
+                "property": "lead_fit_signal",
+                "value": "={{ $json.fit_signal }}"
+              },
+              {
+                "property": "lead_recommended_action",
+                "value": "={{ $json.recommended_action }}"
+              }
+            ]
+          }
+        }
+      },
+      "credentials": {
+        "hubspotAppToken": {
+          "name": "HubSpot Service Key (Native Node)"
+        }
+      }
+    },
+    {
+      "id": "053170be-4479-4eb0-b4a7-204f8fa6f4ee",
+      "name": "HubSpot - Create Audit Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1500,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/notes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ { properties: { hs_note_body: \"<strong>Lead qualification result</strong><br>Score: \" + $('Parse Score').first().json.score + \" &rarr; \" + $('Parse Score').first().json.recommended_action + \"<br>Budget: \" + $('Parse Score').first().json.budget_signal + \" | Urgency: \" + $('Parse Score').first().json.urgency_signal + \" | Fit: \" + $('Parse Score').first().json.fit_signal + \"<br><br>Reasoning: \" + $('Parse Score').first().json.reasoning + \"<br><br>Original message: \" + $('Parse Score').first().json.message, hs_timestamp: String(Date.now()) }, associations: [ { to: { id: String($json.vid) }, types: [ { associationCategory: \"HUBSPOT_DEFINED\", associationTypeId: 202 } ] } ] } }}"
+      },
+      "credentials": {
+        "httpBearerAuth": {
+          "name": "HubSpot Service Key (Bearer for HTTP Request)"
+        }
+      }
+    },
+    {
+      "id": "e64f75fa-69bf-40b9-93de-dcc4bd35aaee",
+      "name": "Is High Priority",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1750,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $('Parse Score').first().json.recommended_action }}",
+              "rightValue": "high_priority_outreach",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "aea5ca02-fec8-4726-9f62-fe4b8cbd25e4",
+      "name": "Build Draft Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        -200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const lead = $('Parse Score').first().json;\n\nconst prompt = `Write a short, personalized outreach email to a lead who just qualified as\\nhigh-priority for an n8n workflow automation / AI agent / CRM automation business.\\n\\nLead:\\nName: ${lead.name}\\nCompany: ${lead.company}\\nTheir message: ${lead.message}\\n\\nWhy they qualified: ${lead.reasoning}\\n\\nWrite a brief, warm, non-salesy email that references their specific request, proposes\\na short call to scope the work, and signs off simply as \\\"the team\\\". No markdown, no\\nplaceholders like [Name] - use the actual details given. Call submit_draft_email with\\nthe subject and body.`;\n\nconst requestBody = {\n  model: \"claude-opus-5\",\n  max_tokens: 2048,\n  output_config: { effort: \"medium\" },\n  tools: [\n    {\n      name: \"submit_draft_email\",\n      description: \"Submit the subject line and body for a personalized outreach email.\",\n      strict: true,\n      input_schema: {\n        type: \"object\",\n        properties: {\n          subject: { type: \"string\", description: \"Short, specific email subject line.\" },\n          body: { type: \"string\", description: \"Plain-text email body, first-person, no markdown/HTML.\" }\n        },\n        required: [\"subject\", \"body\"],\n        additionalProperties: false\n      }\n    }\n  ],\n  tool_choice: { type: \"tool\", name: \"submit_draft_email\" },\n  messages: [{ role: \"user\", content: prompt }]\n};\n\nreturn [{ json: { requestBody, leadEmail: lead.email } }];"
+      }
+    },
+    {
+      "id": "f8c48f2b-bf05-4b76-9a5b-a60cf6622372",
+      "name": "Draft Copy - Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2250,
+        -200
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Anthropic API Key (Header Auth)"
+        }
+      }
+    },
+    {
+      "id": "47840d1d-ccff-4207-b056-582fdc577dfd",
+      "name": "Parse Draft Copy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        -200
+      ],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const response = $json;\n\nif (response.stop_reason === 'refusal') {\n  throw new Error('Claude declined to draft outreach email (refusal): ' + JSON.stringify(response.stop_details || {}));\n}\n\nconst toolUse = (response.content || []).find(b => b.type === 'tool_use');\nif (!toolUse) {\n  throw new Error('No tool_use block found in Claude draft response');\n}\n\nconst leadEmail = $('Build Draft Request').first().json.leadEmail;\n\nreturn [{\n  json: {\n    subject: toolUse.input.subject,\n    body: toolUse.input.body,\n    leadEmail\n  }\n}];"
+      }
+    },
+    {
+      "id": "ab50bd70-4107-4703-8d8a-7bda2d7c3017",
+      "name": "Gmail - Create Draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2750,
+        -200
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "resource": "draft",
+        "operation": "create",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {
+          "sendTo": "={{ $json.leadEmail }}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail OAuth2 (Lead Outreach Drafts)"
+        }
+      }
+    },
+    {
+      "id": "03092a12-ca59-41f9-9ffb-57a073f216e7",
+      "name": "Combine Outcome",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3000,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "110dbaf4-2fdc-41dd-b92f-6684c511bb56",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3250,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: \"success\", email: $('Parse Score').first().json.email, score: $('Parse Score').first().json.score, recommended_action: $('Parse Score').first().json.recommended_action, contact_id: $('HubSpot - Upsert Contact').first().json.vid } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "295c713a-f763-4094-a437-cacb19d11d82",
+      "name": "Respond - Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1750,
+        400
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"upstream_error\", message: \"Lead processing failed - check n8n execution logs for details.\" } }}",
+        "options": {
+          "responseCode": 502
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Lead Intake": {
+      "main": [
+        [
+          {
+            "node": "Validate Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Lead": {
+      "main": [
+        [
+          {
+            "node": "Build Scoring Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Scoring Request": {
+      "main": [
+        [
+          {
+            "node": "Score Lead - Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Lead - Claude": {
+      "main": [
+        [
+          {
+            "node": "Parse Score",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Score": {
+      "main": [
+        [
+          {
+            "node": "HubSpot - Upsert Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot - Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "HubSpot - Create Audit Note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot - Create Audit Note": {
+      "main": [
+        [
+          {
+            "node": "Is High Priority",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is High Priority": {
+      "main": [
+        [
+          {
+            "node": "Build Draft Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Combine Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Draft Request": {
+      "main": [
+        [
+          {
+            "node": "Draft Copy - Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Copy - Claude": {
+      "main": [
+        [
+          {
+            "node": "Parse Draft Copy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Draft Copy": {
+      "main": [
+        [
+          {
+            "node": "Gmail - Create Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail - Create Draft": {
+      "main": [
+        [
+          {
+            "node": "Combine Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Outcome": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
