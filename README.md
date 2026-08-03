@@ -29,6 +29,12 @@ eating manual review time, and every decision is auditable after the fact.
 
 ## How it works
 
+The workflow as it actually runs in n8n:
+
+![Workflow canvas](workflow-canvas.jpg)
+
+And the same flow simplified:
+
 ```mermaid
 flowchart TD
     A[Lead submitted<br/>web form / chat / API] --> B{Required fields<br/>present?}
